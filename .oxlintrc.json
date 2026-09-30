@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "no-underscore-dangle": [
+      "warn",
+      { "allow": ["_tag", "__INTERNAL_getFeatureGate", "__INTERNAL_getExperiment"] }
+    ]
+  },
+  "ignorePatterns": ["dist"]
+}
