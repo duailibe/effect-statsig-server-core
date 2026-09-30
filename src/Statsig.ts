@@ -110,11 +110,13 @@ export class Experiment {
    * The parameter `key`, or `fallback` when it is missing or its type differs
    * from `fallback`'s (arrays, objects, and each primitive type count as
    * different). With a `null` or `undefined` fallback, any value is returned.
+   * Only string, number, and boolean fallbacks give typed results. Other
+   * fallbacks return `unknown`; use a `Schema` to decode structured values.
    */
   get(key: string, fallback: string): string
   get(key: string, fallback: number): number
   get(key: string, fallback: boolean): boolean
-  get<A>(key: string, fallback: A): A
+  get(key: string, fallback: unknown): unknown
   get(key: string, fallback: unknown): unknown {
     const value = this.value[key]
     if (value === undefined || value === null) return fallback
@@ -318,7 +320,11 @@ const start = Effect.fnUntraced(function* (
     (client) =>
       Effect.promise(() => client.shutdown(shutdownTimeoutMs)).pipe(logFailure("shutdown")),
   )
-  yield* Effect.promise(() => native.initialize()).pipe(logFailure("initialize"))
+  // Native initialization cannot be cancelled; let it finish before shutdown.
+  yield* Effect.promise(() => native.initialize()).pipe(
+    logFailure("initialize"),
+    Effect.uninterruptible,
+  )
   setup(native)
   return fromNative(native)
 })

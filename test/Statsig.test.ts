@@ -1,6 +1,8 @@
-import { assert, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Logger, Redacted } from "effect"
+import { setImmediate } from "node:timers/promises"
+import { assert, describe, expectTypeOf, it, vi } from "@effect/vitest"
+import { ConfigProvider, Effect, Exit, Layer, Logger, Redacted } from "effect"
 import { Statsig } from "../src/index.js"
+import { load, type NativeResult, type NativeStatsig } from "../src/internal/native.js"
 
 const user = { userID: "user-1", email: "someone@example.com", custom: { plan: "pro" } }
 
@@ -87,6 +89,58 @@ describe("Statsig", () => {
         assert.strictEqual(experiment.get("price", null), 20)
       }).pipe(Effect.provide(TestLayer)),
     )
+
+    it.effect("get only infers validated primitive types", () =>
+      Effect.gen(function* () {
+        const experiment = yield* Statsig.getExperiment(user, "pricing")
+        expectTypeOf(experiment.get("price", 10)).toEqualTypeOf<number>()
+        expectTypeOf(experiment.get("color", "blue")).toEqualTypeOf<string>()
+        expectTypeOf(experiment.get("missing", false)).toEqualTypeOf<boolean>()
+        expectTypeOf(experiment.get("price", null)).toEqualTypeOf<unknown>()
+        expectTypeOf(experiment.get("price", undefined)).toEqualTypeOf<unknown>()
+        expectTypeOf(experiment.get("tiers", ["b"])).toEqualTypeOf<unknown>()
+        expectTypeOf(experiment.get("limits", { max: "unlimited" })).toEqualTypeOf<unknown>()
+        assert.strictEqual(experiment.get("price", undefined), 20)
+        assert.deepStrictEqual(experiment.get("limits", { max: "unlimited" }), { max: 1 })
+      }).pipe(Effect.provide(TestLayer)),
+    )
+  })
+
+  it("waits for initialization before shutdown when interrupted", async () => {
+    const prototype = load().StatsigNapiInternal.prototype as NativeStatsig
+    const started = Promise.withResolvers<void>()
+    const initialized = Promise.withResolvers<NativeResult>()
+    const initialize = vi.spyOn(prototype, "initialize").mockImplementation(() => {
+      started.resolve()
+      return initialized.promise
+    })
+    const shutdown = vi.spyOn(prototype, "shutdown")
+    const controller = new AbortController()
+    const running = Effect.runPromiseExit(
+      Statsig.make({
+        sdkKey: "secret-test",
+        disableNetwork: true,
+        disableAllLogging: true,
+        outputLogLevel: "none",
+      }).pipe(Effect.scoped),
+      { signal: controller.signal },
+    )
+    try {
+      await started.promise
+      controller.abort()
+      await setImmediate()
+      assert.lengthOf(shutdown.mock.calls, 0)
+
+      initialized.resolve({ isSuccess: true })
+      const exit = await running
+      assert.isTrue(Exit.hasInterrupts(exit))
+      assert.lengthOf(shutdown.mock.calls, 1)
+    } finally {
+      initialized.resolve({ isSuccess: true })
+      await running
+      initialize.mockRestore()
+      shutdown.mockRestore()
+    }
   })
 
   it.effect("a failed evaluation logs an error and returns the default", () => {
