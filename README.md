@@ -55,8 +55,10 @@ Each evaluation takes `{ disableExposureLogging: true }` as a third argument. A 
 `userID` or `customIDs`.
 
 `Experiment.get(key, fallback)` returns `fallback` when the parameter is missing or has a
-different type (each primitive type, arrays and objects are distinct). For typed parameters,
-decode `experiment.value` with a `Schema`.
+different type (each primitive type, arrays and objects are distinct). A `null` or `undefined`
+fallback skips the type check. String, number and boolean fallbacks give typed results;
+other fallbacks return `unknown`. For typed arrays or objects, decode `experiment.value`
+with a `Schema`.
 
 ### Layers
 
@@ -78,7 +80,8 @@ caps how long shutdown spends flushing events.
 
 - Building the layer creates the client and waits for `initialize`, which fetches rules
   (up to `initTimeoutMs`, default 3000). Closing the layer's scope calls `shutdown`, which
-  flushes queued exposures.
+  flushes queued exposures. Startup can't be cancelled: interrupting it, or closing the
+  scope, waits for `initialize` to finish before calling `shutdown`.
 - If `initialize` fails (bad key, network down), the layer logs a warning and builds anyway.
   Gates return `false` and experiments `{}`, with reason `NoValues`, until a background sync
   succeeds. This matches Statsig's SDK.

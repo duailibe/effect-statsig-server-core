@@ -1,6 +1,8 @@
-import { assert, describe, it } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Logger, Redacted } from "effect"
+import { setImmediate } from "node:timers/promises"
+import { assert, describe, expectTypeOf, it, onTestFinished, vi } from "@effect/vitest"
+import { ConfigProvider, Effect, Exit, Layer, Logger, Redacted } from "effect"
 import { Statsig } from "../src/index.js"
+import { load, type NativeResult, type NativeStatsig } from "../src/internal/native.js"
 
 const user = { userID: "user-1", email: "someone@example.com", custom: { plan: "pro" } }
 
@@ -16,6 +18,25 @@ const captureLogs = () => {
     messages.push(Array.isArray(message) ? message : [message])
   })
   return { messages, layer: Logger.layer([logger]) }
+}
+
+// Makes native `initialize` hang until `finish` is called. Restored when the test ends.
+const pendingInitialize = () => {
+  const prototype = load().StatsigNapiInternal.prototype as NativeStatsig
+  const started = Promise.withResolvers<void>()
+  const initialized = Promise.withResolvers<NativeResult>()
+  const finish = () => initialized.resolve({ isSuccess: true })
+  const initialize = vi.spyOn(prototype, "initialize").mockImplementation(() => {
+    started.resolve()
+    return initialized.promise
+  })
+  const shutdown = vi.spyOn(prototype, "shutdown")
+  onTestFinished(() => {
+    finish()
+    initialize.mockRestore()
+    shutdown.mockRestore()
+  })
+  return { started: started.promise, finish, shutdown }
 }
 
 describe("Statsig", () => {
@@ -87,6 +108,63 @@ describe("Statsig", () => {
         assert.strictEqual(experiment.get("price", null), 20)
       }).pipe(Effect.provide(TestLayer)),
     )
+
+    it.effect("get only infers validated primitive types", () =>
+      Effect.gen(function* () {
+        const experiment = yield* Statsig.getExperiment(user, "pricing")
+        expectTypeOf(experiment.get("price", 10)).toEqualTypeOf<number>()
+        expectTypeOf(experiment.get("color", "blue")).toEqualTypeOf<string>()
+        expectTypeOf(experiment.get("missing", false)).toEqualTypeOf<boolean>()
+        expectTypeOf(experiment.get("price", null)).toEqualTypeOf<unknown>()
+        expectTypeOf(experiment.get("price", undefined)).toEqualTypeOf<unknown>()
+        expectTypeOf(experiment.get("tiers", ["b"])).toEqualTypeOf<unknown>()
+        expectTypeOf(experiment.get("limits", { max: "unlimited" })).toEqualTypeOf<unknown>()
+        assert.strictEqual(experiment.get("price", undefined), 20)
+        assert.deepStrictEqual(experiment.get("limits", { max: "unlimited" }), { max: 1 })
+      }).pipe(Effect.provide(TestLayer)),
+    )
+  })
+
+  describe("startup", () => {
+    const options = {
+      sdkKey: "secret-test",
+      disableNetwork: true,
+      disableAllLogging: true,
+      outputLogLevel: "none",
+    } as const
+
+    it("waits for initialization before shutdown when interrupted", async () => {
+      const native = pendingInitialize()
+      const controller = new AbortController()
+      const running = Effect.runPromiseExit(Statsig.make(options).pipe(Effect.scoped), {
+        signal: controller.signal,
+      })
+      await native.started
+      controller.abort()
+      await setImmediate()
+      assert.lengthOf(native.shutdown.mock.calls, 0)
+
+      native.finish()
+      assert.isTrue(Exit.hasInterrupts(await running))
+      assert.lengthOf(native.shutdown.mock.calls, 1)
+    })
+
+    it("waits for initialization before shutdown when the scope closes", async () => {
+      const native = pendingInitialize()
+      const running = Effect.runPromise(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(Statsig.make(options))
+          yield* Effect.promise(() => native.started)
+        }).pipe(Effect.scoped),
+      )
+      await native.started
+      await setImmediate()
+      assert.lengthOf(native.shutdown.mock.calls, 0)
+
+      native.finish()
+      await running
+      assert.lengthOf(native.shutdown.mock.calls, 1)
+    })
   })
 
   it.effect("a failed evaluation logs an error and returns the default", () => {
