@@ -1,5 +1,5 @@
 import { setImmediate } from "node:timers/promises"
-import { assert, describe, expectTypeOf, it, vi } from "@effect/vitest"
+import { assert, describe, expectTypeOf, it, onTestFinished, vi } from "@effect/vitest"
 import { ConfigProvider, Effect, Exit, Layer, Logger, Redacted } from "effect"
 import { Statsig } from "../src/index.js"
 import { load, type NativeResult, type NativeStatsig } from "../src/internal/native.js"
@@ -18,6 +18,25 @@ const captureLogs = () => {
     messages.push(Array.isArray(message) ? message : [message])
   })
   return { messages, layer: Logger.layer([logger]) }
+}
+
+// Makes native `initialize` hang until `finish` is called. Restored when the test ends.
+const pendingInitialize = () => {
+  const prototype = load().StatsigNapiInternal.prototype as NativeStatsig
+  const started = Promise.withResolvers<void>()
+  const initialized = Promise.withResolvers<NativeResult>()
+  const finish = () => initialized.resolve({ isSuccess: true })
+  const initialize = vi.spyOn(prototype, "initialize").mockImplementation(() => {
+    started.resolve()
+    return initialized.promise
+  })
+  const shutdown = vi.spyOn(prototype, "shutdown")
+  onTestFinished(() => {
+    finish()
+    initialize.mockRestore()
+    shutdown.mockRestore()
+  })
+  return { started: started.promise, finish, shutdown }
 }
 
 describe("Statsig", () => {
@@ -106,41 +125,46 @@ describe("Statsig", () => {
     )
   })
 
-  it("waits for initialization before shutdown when interrupted", async () => {
-    const prototype = load().StatsigNapiInternal.prototype as NativeStatsig
-    const started = Promise.withResolvers<void>()
-    const initialized = Promise.withResolvers<NativeResult>()
-    const initialize = vi.spyOn(prototype, "initialize").mockImplementation(() => {
-      started.resolve()
-      return initialized.promise
-    })
-    const shutdown = vi.spyOn(prototype, "shutdown")
-    const controller = new AbortController()
-    const running = Effect.runPromiseExit(
-      Statsig.make({
-        sdkKey: "secret-test",
-        disableNetwork: true,
-        disableAllLogging: true,
-        outputLogLevel: "none",
-      }).pipe(Effect.scoped),
-      { signal: controller.signal },
-    )
-    try {
-      await started.promise
+  describe("startup", () => {
+    const options = {
+      sdkKey: "secret-test",
+      disableNetwork: true,
+      disableAllLogging: true,
+      outputLogLevel: "none",
+    } as const
+
+    it("waits for initialization before shutdown when interrupted", async () => {
+      const native = pendingInitialize()
+      const controller = new AbortController()
+      const running = Effect.runPromiseExit(Statsig.make(options).pipe(Effect.scoped), {
+        signal: controller.signal,
+      })
+      await native.started
       controller.abort()
       await setImmediate()
-      assert.lengthOf(shutdown.mock.calls, 0)
+      assert.lengthOf(native.shutdown.mock.calls, 0)
 
-      initialized.resolve({ isSuccess: true })
-      const exit = await running
-      assert.isTrue(Exit.hasInterrupts(exit))
-      assert.lengthOf(shutdown.mock.calls, 1)
-    } finally {
-      initialized.resolve({ isSuccess: true })
+      native.finish()
+      assert.isTrue(Exit.hasInterrupts(await running))
+      assert.lengthOf(native.shutdown.mock.calls, 1)
+    })
+
+    it("waits for initialization before shutdown when the scope closes", async () => {
+      const native = pendingInitialize()
+      const running = Effect.runPromise(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(Statsig.make(options))
+          yield* Effect.promise(() => native.started)
+        }).pipe(Effect.scoped),
+      )
+      await native.started
+      await setImmediate()
+      assert.lengthOf(native.shutdown.mock.calls, 0)
+
+      native.finish()
       await running
-      initialize.mockRestore()
-      shutdown.mockRestore()
-    }
+      assert.lengthOf(native.shutdown.mock.calls, 1)
+    })
   })
 
   it.effect("a failed evaluation logs an error and returns the default", () => {

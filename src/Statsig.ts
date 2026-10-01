@@ -311,19 +311,20 @@ const start = Effect.fnUntraced(function* (
   setup: (native: NativeStatsig) => void = () => {},
 ) {
   const { sdkKey, shutdownTimeoutMs = 3000, ...statsigOptions } = options
+  // Native initialization cannot be cancelled. Running it in the uninterruptible
+  // acquire step registers `shutdown` only after it settles.
   const native = yield* Effect.acquireRelease(
     Effect.sync(() => {
       const { StatsigNapiInternal } = load()
       const key = Redacted.isRedacted(sdkKey) ? Redacted.value(sdkKey) : sdkKey
       return new StatsigNapiInternal(key, statsigOptions)
-    }),
+    }).pipe(
+      Effect.tap((client) =>
+        Effect.promise(() => client.initialize()).pipe(logFailure("initialize")),
+      ),
+    ),
     (client) =>
       Effect.promise(() => client.shutdown(shutdownTimeoutMs)).pipe(logFailure("shutdown")),
-  )
-  // Native initialization cannot be cancelled; let it finish before shutdown.
-  yield* Effect.promise(() => native.initialize()).pipe(
-    logFailure("initialize"),
-    Effect.uninterruptible,
   )
   setup(native)
   return fromNative(native)
