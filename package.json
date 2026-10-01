@@ -1,6 +1,6 @@
 {
   "name": "effect-statsig-server-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Statsig feature gates and experiments for Effect, on Statsig's native server core. Unofficial.",
   "keywords": [
     "effect",
