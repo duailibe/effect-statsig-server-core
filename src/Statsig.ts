@@ -150,6 +150,14 @@ export class Statsig extends Context.Service<
       experiment: string,
       options?: EvaluationOptions,
     ) => Effect.Effect<Experiment>
+    /**
+     * Log an exposure to `experiment` for `user`. Pair it with `getExperiment`
+     * and `disableExposureLogging` to log only when the user sees the values.
+     */
+    readonly manuallyLogExperimentExposure: (
+      user: StatsigUser,
+      experiment: string,
+    ) => Effect.Effect<void>
     /** Send queued exposures now instead of at the next background flush. */
     readonly flushEvents: Effect.Effect<void>
   }
@@ -178,6 +186,16 @@ export const getExperiment = (
   options?: EvaluationOptions,
 ): Effect.Effect<Experiment, never, Statsig> =>
   Statsig.use((statsig) => statsig.getExperiment(user, experiment, options))
+
+/**
+ * Log an exposure to `experiment` for `user`. Pair it with `getExperiment`
+ * and `disableExposureLogging` to log only when the user sees the values.
+ */
+export const manuallyLogExperimentExposure = (
+  user: StatsigUser,
+  experiment: string,
+): Effect.Effect<void, never, Statsig> =>
+  Statsig.use((statsig) => statsig.manuallyLogExperimentExposure(user, experiment))
 
 /** Send queued exposures now instead of at the next background flush. */
 export const flushEvents: Effect.Effect<void, never, Statsig> = Statsig.use(
@@ -254,12 +272,13 @@ const toExperiment = (name: string, raw: Record<string, unknown>): Experiment =>
   })
 
 // Statsig's own wrapper never throws from an evaluation; neither does this.
-const evaluate = <A>(what: string, fallback: () => A, run: () => A): Effect.Effect<A> =>
+// Exposure logging follows the same policy.
+const attempt = <A>(what: string, fallback: () => A, run: () => A): Effect.Effect<A> =>
   Effect.suspend(() => {
     try {
       return Effect.succeed(run())
     } catch (cause) {
-      return Effect.as(Effect.logError(`Statsig failed to evaluate ${what}.`, cause), fallback())
+      return Effect.as(Effect.logError(`Statsig failed to ${what}.`, cause), fallback())
     }
   })
 
@@ -280,27 +299,33 @@ const fromNative = (native: NativeStatsig): Statsig["Service"] => {
   const toNativeUser = (user: StatsigUser): NativeUser => new StatsigUser(user)
   return Statsig.of({
     checkGate: (user, gate, options) =>
-      evaluate(
-        `gate ${gate}`,
+      attempt(
+        `evaluate gate ${gate}`,
         () => false,
         () => native.checkGate(toNativeUser(user), gate, options),
       ),
     getFeatureGate: (user, gate, options) =>
-      evaluate(
-        `gate ${gate}`,
+      attempt(
+        `evaluate gate ${gate}`,
         () => toFeatureGate(gate, { details: { reason: "Error" } }),
         () =>
           toFeatureGate(gate, native.__INTERNAL_getFeatureGate(toNativeUser(user), gate, options)),
       ),
     getExperiment: (user, experiment, options) =>
-      evaluate(
-        `experiment ${experiment}`,
+      attempt(
+        `evaluate experiment ${experiment}`,
         () => toExperiment(experiment, { details: { reason: "Error" } }),
         () =>
           toExperiment(
             experiment,
             native.__INTERNAL_getExperiment(toNativeUser(user), experiment, options),
           ),
+      ),
+    manuallyLogExperimentExposure: (user, experiment) =>
+      attempt(
+        `log an exposure for experiment ${experiment}`,
+        () => undefined,
+        () => native.manuallyLogExperimentExposure(toNativeUser(user), experiment),
       ),
     flushEvents: Effect.promise(() => native.flushEvents()).pipe(logFailure("flushEvents")),
   })

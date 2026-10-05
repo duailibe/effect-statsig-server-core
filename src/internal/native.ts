@@ -42,6 +42,7 @@ export interface NativeStatsig {
     name: string,
     options?: NativeEvaluationOptions,
   ): Record<string, unknown>
+  manuallyLogExperimentExposure(user: NativeUser, name: string): void
   overrideGate(name: string, value: boolean, id?: string): void
   overrideExperiment(name: string, value: Record<string, unknown>, id?: string): void
 }

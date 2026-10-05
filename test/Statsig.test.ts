@@ -5,6 +5,8 @@ import { Statsig } from "../src/index.js"
 import { load, type NativeResult, type NativeStatsig } from "../src/internal/native.js"
 
 const user = { userID: "user-1", email: "someone@example.com", custom: { plan: "pro" } }
+// A customIDs value the binding cannot convert makes it throw.
+const badUser = { customIDs: { companyID: Symbol("x") as unknown as string } }
 
 const TestLayer = Statsig.layerTest({
   gates: { on: true, off: false },
@@ -169,17 +171,29 @@ describe("Statsig", () => {
 
   it.effect("a failed evaluation logs an error and returns the default", () => {
     const logs = captureLogs()
-    // A customIDs value the binding cannot convert makes it throw.
-    const bad = { customIDs: { companyID: Symbol("x") as unknown as string } }
     return Effect.gen(function* () {
-      assert.isFalse(yield* Statsig.checkGate(bad, "on"))
-      const gate = yield* Statsig.getFeatureGate(bad, "on")
+      assert.isFalse(yield* Statsig.checkGate(badUser, "on"))
+      const gate = yield* Statsig.getFeatureGate(badUser, "on")
       assert.strictEqual(gate.details.reason, "Error")
-      const experiment = yield* Statsig.getExperiment(bad, "pricing")
+      const experiment = yield* Statsig.getExperiment(badUser, "pricing")
       assert.deepStrictEqual(experiment.value, {})
       assert.strictEqual(experiment.details.reason, "Error")
       assert.lengthOf(logs.messages, 3)
       assert.match(String(logs.messages[0]?.[0]), /failed to evaluate gate on/)
+    }).pipe(Effect.provide([TestLayer, logs.layer]))
+  })
+
+  it.effect("manuallyLogExperimentExposure logs failures instead of raising", () => {
+    const logs = captureLogs()
+    return Effect.gen(function* () {
+      yield* Statsig.manuallyLogExperimentExposure(user, "pricing")
+      assert.lengthOf(logs.messages, 0)
+      yield* Statsig.manuallyLogExperimentExposure(badUser, "pricing")
+      assert.lengthOf(logs.messages, 1)
+      assert.match(
+        String(logs.messages[0]?.[0]),
+        /failed to log an exposure for experiment pricing/,
+      )
     }).pipe(Effect.provide([TestLayer, logs.layer]))
   })
 
