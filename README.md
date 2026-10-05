@@ -44,15 +44,18 @@ const program = Effect.gen(function* () {
 program.pipe(Effect.provide(Statsig.layerConfig({ environment: "production" })))
 ```
 
-| Function                             | Returns                                                  |
-| ------------------------------------ | -------------------------------------------------------- |
-| `Statsig.checkGate(user, name)`      | `boolean`                                                |
-| `Statsig.getFeatureGate(user, name)` | `FeatureGate`: `value`, `ruleID`, `idType`, `details`    |
-| `Statsig.getExperiment(user, name)`  | `Experiment`: `value`, `groupName`, `get(key, fallback)` |
-| `Statsig.flushEvents`                | Sends queued exposures now                               |
+| Function                                            | Returns                                                  |
+| --------------------------------------------------- | -------------------------------------------------------- |
+| `Statsig.checkGate(user, name)`                     | `boolean`                                                |
+| `Statsig.getFeatureGate(user, name)`                | `FeatureGate`: `value`, `ruleID`, `idType`, `details`    |
+| `Statsig.getExperiment(user, name)`                 | `Experiment`: `value`, `groupName`, `get(key, fallback)` |
+| `Statsig.manuallyLogExperimentExposure(user, name)` | `void`. Logs an exposure to the experiment               |
+| `Statsig.flushEvents`                               | Sends queued exposures now                               |
 
-Each evaluation takes `{ disableExposureLogging: true }` as a third argument. A user needs a
-`userID` or `customIDs`.
+Each evaluation takes `{ disableExposureLogging: true }` as a third argument. To log an
+experiment's exposure only when the user sees its values, call `getExperiment` with that
+option, then `manuallyLogExperimentExposure` when you use them. A user needs a `userID` or
+`customIDs`.
 
 `Experiment.get(key, fallback)` returns `fallback` when the parameter is missing or has a
 different type (each primitive type, arrays and objects are distinct). A `null` or `undefined`
@@ -86,7 +89,8 @@ caps how long shutdown spends flushing events.
   Gates return `false` and experiments `{}`, with reason `NoValues`, until a background sync
   succeeds. This matches Statsig's SDK.
 - Evaluations never fail. If the binding throws, the error is logged and you get the
-  default, with reason `Error`.
+  default, with reason `Error`. `manuallyLogExperimentExposure` doesn't fail either; it
+  logs the error.
 - A missing binary is a defect when the layer builds. It's a packaging problem, not
   something to retry.
 - The binary prints its own warnings to stdout. Set `outputLogLevel` to change that.
